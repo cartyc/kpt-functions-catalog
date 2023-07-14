@@ -43,6 +43,9 @@ FUNCTIONS := \
 	starlark \
 	upsert-resource
 
+FUNCTION_KO := \
+	set-name-prefix
+
 # Targets for running all function tests
 FUNCTION_TESTS := $(patsubst %,%-TEST,$(FUNCTIONS))
 # Targets for generating all functions docs
@@ -53,6 +56,8 @@ FUNCTION_CHECKLICENSES := $(patsubst %,%-CHECKLICENSES,$(FUNCTIONS))
 FUNCTION_BUILDS := $(patsubst %,%-BUILD,$(FUNCTIONS))
 # Targets to push images
 FUNCTION_PUSH := $(patsubst %,%-PUSH,$(FUNCTIONS))
+# Targets to push functions via ko
+FUNCTION_KO_PUSH := $(patsubst %,%-PUSH,$(FUNCTION_KO))
 # Current function name used by individual function targets
 CURRENT_FUNCTION ?= unknown
 
@@ -92,14 +97,22 @@ $(FUNCTION_BUILDS):
 	$(MAKE) CURRENT_FUNCTION=$(subst -BUILD,,$@) TAG=$(TAG) DEFAULT_GCR=$(GCR) func-build
 
 .PHONY: push
-push: $(FUNCTION_PUSH) ## Push images to registry. WARN: This operation should only be done in CI environment.
+push: $(FUNCTION_KO_PUSH) $(FUNCTION_PUSH) ## Push images to registry. WARN: This operation should only be done in CI environment.
 
 .PHONY: $(FUNCTION_PUSH)
 $(FUNCTION_PUSH):
 	$(MAKE) CURRENT_FUNCTION=$(subst -PUSH,,$@) TAG=$(TAG) DEFAULT_GCR=$(GCR) func-push
 
+.PHONY: $(FUNCTION_KO_PUSH)
+$(FUNCTION_KO_PUSH):
+	cd $(subst -PUSH,,$@) && $(MAKE) IMAGE_REPO=$(GCR) IMAGE_TAG=$(TAG) push
+
 .PHONY: check-licenses
 check-licenses: install-go-licenses $(FUNCTION_CHECKLICENSES)
+
+add-licenses:
+	@echo Update license in path: functions/go
+	GOBIN=$(GOBIN) ../../hack/update-license.sh
 
 .PHONY: $(FUNCTION_CHECKLICENSES)
 $(FUNCTION_CHECKLICENSES):
@@ -118,7 +131,7 @@ install-mdtogo:
 
 # Recipes for individual function
 .PHONY: func-fix func-vet func-fmt func-test func-lint \
-	func-build func-push func-verify func-check-licenses docs-generate
+	func-build func-push func-verify func-check-licenses docs-generate add-licenses
 func-verify: docs-generate func-fix func-vet func-fmt func-test func-lint func-check-licenses
 
 func-fix:
@@ -129,7 +142,7 @@ func-fmt:
 
 func-lint:
 	(which $(GOPATH)/bin/golangci-lint || \
-		curl -sSfL https://raw.githubusercontent.com/golangci/golangci-lint/v1.45.0/install.sh | sh -s -- -b $(GOPATH)/bin v1.41.1)
+		curl -sSfL https://raw.githubusercontent.com/golangci/golangci-lint/v1.49.0/install.sh | sh -s -- -b $(GOPATH)/bin v1.49.0)
 	cd $(CURRENT_FUNCTION) && time $(GOPATH)/bin/golangci-lint run --timeout=10m ./...
 
 func-test:

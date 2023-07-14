@@ -1,13 +1,15 @@
-FROM node:14.17-alpine3.13 as builder
+ARG BUILDER_IMAGE
+ARG BASE_IMAGE
+
+
+FROM --platform=$BUILDPLATFORM $BUILDER_IMAGE as builder
 
 RUN apk add bash curl git && apk update
 
-ARG SOPS_VERSION="v3.7.1"
-RUN curl -fsSL -o /usr/local/bin/sops https://github.com/mozilla/sops/releases/download/${SOPS_VERSION}/sops-${SOPS_VERSION}.linux && \
+ARG TARGETOS TARGETARCH
+ARG SOPS_VERSION="v3.7.3"
+RUN curl -fsSL -o /usr/local/bin/sops https://github.com/mozilla/sops/releases/download/${SOPS_VERSION}/sops-${SOPS_VERSION}.${TARGETOS}.${TARGETARCH} && \
     chmod +x /usr/local/bin/sops
-
-RUN curl -fsSL -o /usr/local/bin/kpt https://storage.googleapis.com/kpt-dev/latest/linux_amd64/kpt && \
-    chmod +x /usr/local/bin/kpt
 
 RUN mkdir -p /home/node/app && \
     chown -R node:node /home/node/app
@@ -34,7 +36,7 @@ RUN npm run build && \
 
 #############################################
 
-FROM node:14.17-alpine3.13
+FROM $BASE_IMAGE
 
 RUN apk add git gnupg
 

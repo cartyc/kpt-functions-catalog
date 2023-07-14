@@ -9,7 +9,7 @@ import (
 	"crypto/md5"
 	"encoding/hex"
 	"fmt"
-	"io/ioutil"
+	"io"
 	"net/http"
 	"net/url"
 	"os"
@@ -19,15 +19,13 @@ import (
 	"strings"
 
 	"github.com/GoogleContainerTools/kpt-functions-catalog/functions/go/render-helm-chart/third_party/sigs.k8s.io/kustomize/api/types"
+	"github.com/GoogleContainerTools/kpt-functions-sdk/go/fn"
 	"github.com/imdario/mergo"
-	"github.com/pkg/errors"
-	"sigs.k8s.io/kustomize/api/hasher"
-	"sigs.k8s.io/kustomize/api/resmap"
-	"sigs.k8s.io/kustomize/api/resource"
+	corev1 "k8s.io/api/core/v1"
+	"sigs.k8s.io/kustomize/kyaml/kio"
 	"sigs.k8s.io/yaml"
 )
 
-// Add the given labels to the given field specifications.
 type HelmArgs struct {
 	types.HelmGlobals `json:"helmGlobals,omitempty" yaml:"helmGlobals,omitempty"`
 	HelmCharts        []types.HelmChart `json:"helmCharts,omitempty" yaml:"helmCharts,omitempty"`
@@ -36,6 +34,8 @@ type HelmArgs struct {
 type HelmChartInflationGeneratorPlugin struct {
 	types.HelmGlobals `json:",inline,omitempty" yaml:",inline,omitempty"`
 	types.HelmChart   `json:",inline,omitempty" yaml:",inline,omitempty"`
+	username          string
+	password          string
 	tmpDir            string
 }
 
@@ -51,7 +51,7 @@ var legalMergeOptions = []string{
 	valuesMergeOptionReplace,
 }
 
-//noinspection GoUnusedGlobalVariable
+// noinspection GoUnusedGlobalVariable
 var KustomizeHelmChartInflationGeneratorPlugin HelmChartInflationGeneratorPlugin
 
 func (p *HelmChartInflationGeneratorPlugin) establishTmpDir() (err error) {
@@ -59,13 +59,60 @@ func (p *HelmChartInflationGeneratorPlugin) establishTmpDir() (err error) {
 		// already done.
 		return nil
 	}
-	p.tmpDir, err = ioutil.TempDir("", "kustomize-helm-")
+
+	p.tmpDir, err = os.MkdirTemp("", "kustomize-helm-")
 	return err
+}
+
+func (p *HelmChartInflationGeneratorPlugin) ConfigureAuth(items []*fn.KubeObject) (err error) {
+	if p.Auth == nil {
+		return nil
+	}
+	if p.Auth.GetKind() != "Secret" {
+		return fmt.Errorf("auth `kind` must be `Secret`")
+	}
+
+	var targetSecret *fn.KubeObject
+	for _, i := range items {
+		iNamespace := i.GetNamespace()
+		if iNamespace == "" {
+			iNamespace = "default"
+		}
+		authNamespace := p.Auth.Namespace
+		if authNamespace == "" {
+			authNamespace = "default"
+		}
+		if i.GetKind() == "Secret" && i.GetName() == p.Auth.Name && iNamespace == authNamespace {
+			targetSecret = i
+		}
+	}
+	if targetSecret == nil {
+		return fmt.Errorf("could not find Secret %q identified by auth", p.Auth)
+	}
+
+	var secret corev1.Secret
+	if err := targetSecret.As(&secret); err != nil {
+		return fmt.Errorf("could not unmarshal Secret: %s", err.Error())
+	}
+
+	user, ok := secret.Data["username"]
+	if !ok || len(user) == 0 {
+		return fmt.Errorf("could not find username in Secret %s", secret.Name)
+	}
+
+	pass, ok := secret.Data["password"]
+	if !ok || len(pass) == 0 {
+		return fmt.Errorf("could not find password in Secret %s", secret.Name)
+	}
+
+	p.username = string(user)
+	p.password = string(pass)
+	return nil
 }
 
 func (p *HelmChartInflationGeneratorPlugin) ValidateArgs() (err error) {
 	// ChartHome might be written to by the function in a container,
-	// so it must be under the `/tmp` directory
+	// so by default it must be under the `/tmp` directory
 	if p.ChartHome == "" {
 		p.ChartHome = "tmp/charts"
 	}
@@ -76,15 +123,6 @@ func (p *HelmChartInflationGeneratorPlugin) ValidateArgs() (err error) {
 
 	if err = p.errIfIllegalValuesMerge(); err != nil {
 		return err
-	}
-
-	// ConfigHome is not loaded by the HelmChartInflationGeneratorPlugin, and can be located anywhere.
-	if p.ConfigHome == "" {
-		if err = p.establishTmpDir(); err != nil {
-			return errors.Wrap(
-				err, "unable to create tmp dir for HELM_CONFIG_HOME")
-		}
-		p.ConfigHome = filepath.Join(p.tmpDir, "helm")
 	}
 	return nil
 }
@@ -115,20 +153,18 @@ func (p *HelmChartInflationGeneratorPlugin) runHelmCommand(
 	cmd := exec.Command("helm", args...)
 	cmd.Stdout = stdout
 	cmd.Stderr = stderr
-	env := []string{
-		fmt.Sprintf("HELM_CONFIG_HOME=%s", p.ConfigHome),
-		fmt.Sprintf("HELM_CACHE_HOME=%s/.cache", p.ConfigHome),
-		fmt.Sprintf("HELM_DATA_HOME=%s/.data", p.ConfigHome)}
-	cmd.Env = append(os.Environ(), env...)
+	var env []string
+	if p.ConfigHome != "" {
+		env = []string{
+			fmt.Sprintf("HELM_CONFIG_HOME=%s", p.ConfigHome),
+			fmt.Sprintf("HELM_CACHE_HOME=%s/.cache", p.ConfigHome),
+			fmt.Sprintf("HELM_DATA_HOME=%s/.data", p.ConfigHome)}
+		cmd.Env = append(os.Environ(), env...)
+	}
 	err := cmd.Run()
 	if err != nil {
-		helm := "helm"
-		err = errors.Wrap(
-			fmt.Errorf(
-				"unable to run: '%s %s' with env=%s (is '%s' installed?)",
-				helm, strings.Join(args, " "), env, helm),
-			stderr.String(),
-		)
+		err = fmt.Errorf("unable to run: '%s %s' with env=%s; %q: %q",
+			"helm", args[0], env, err.Error(), stderr.String())
 	}
 	return stdout.Bytes(), err
 }
@@ -136,21 +172,24 @@ func (p *HelmChartInflationGeneratorPlugin) runHelmCommand(
 // createNewMergedValuesFiles replaces/merges original values file with ValuesInline.
 func (p *HelmChartInflationGeneratorPlugin) createNewMergedValuesFiles(path string) (
 	string, error) {
-	pValues, err := ioutil.ReadFile(path)
+	pValues, err := os.ReadFile(path)
 	if err != nil {
 		if u, urlErr := url.Parse(path); urlErr == nil {
-			if (u.Scheme == "http" || u.Scheme == "https") {
+			if u.Scheme == "http" || u.Scheme == "https" {
 				resp, err := http.Get(path)
 				if err != nil {
 					return "", err
 				}
 				defer resp.Body.Close()
-				pValues, err = ioutil.ReadAll(resp.Body)
+				pValues, err = io.ReadAll(resp.Body)
 				if err != nil {
 					return "", err
 				}
 			} else { // url scheme is not http or https
-				return "", fmt.Errorf("unsupported URL scheme: %s", path)
+				schemeErr := fmt.Errorf("unsupported URL scheme: %s", path)
+				return "", fmt.Errorf(
+					"could not read provided values file %q: when reading as file path, received error %v; when reading as URL, received error %v",
+					path, err, schemeErr)
 			}
 		} else { // invalid path and invalid URL
 			return "", fmt.Errorf(
@@ -204,56 +243,111 @@ func (p *HelmChartInflationGeneratorPlugin) writeValuesBytes(
 	// use a hash of the provided path to generate a unique, valid filename
 	hash := md5.Sum([]byte(path))
 	newPath := filepath.Join(p.tmpDir, p.Name+"-kustomize-values-"+hex.EncodeToString(hash[:])+".yaml")
-	return newPath, ioutil.WriteFile(newPath, b, 0644)
+	return newPath, os.WriteFile(newPath, b, 0644)
 }
 
 func (p *HelmChartInflationGeneratorPlugin) cleanup() {
 	if p.tmpDir != "" {
 		os.RemoveAll(p.tmpDir)
 	}
+	if isOciRepo(p.Repo) && p.password != "" {
+		// log out of the registry
+		p.runHelmCommand([]string{
+			"registry",
+			"logout",
+			p.Registry,
+		})
+	}
 }
 
-func (p *HelmChartInflationGeneratorPlugin) Generate() (rm resmap.ResMap, err error) {
+func (p *HelmChartInflationGeneratorPlugin) Generate() (objects fn.KubeObjects, err error) {
 	defer p.cleanup()
 	if err = p.checkHelmVersion(); err != nil {
 		return nil, err
 	}
 	if _, exists := p.chartExistsLocally(); !exists {
-		if _, err := p.runHelmCommand(p.pullCommand()); err != nil {
+		var pullArgs []string
+		if isOciRepo(p.Repo) {
+			pullArgs, err = p.pullOCIRepo()
+			if err != nil {
+				return nil, err
+			}
+		} else {
+			pullArgs, err = p.pullNonOCIRepo()
+			if err != nil {
+				return nil, err
+			}
+		}
+		if _, err := p.runHelmCommand(pullArgs); err != nil {
 			return nil, err
 		}
 	}
-	var valuesFiles []string
-	for _, valuesFile := range p.ValuesFiles {
-		file, err := p.createNewMergedValuesFiles(valuesFile)
-		if err != nil {
-			return nil, err
-		}
-		valuesFiles = append(valuesFiles, file)
-	}
-	p.ValuesFiles = valuesFiles
 
+	if err := p.processValuesFiles(); err != nil {
+		return nil, err
+	}
 	var stdout []byte
-	stdout, err = p.runHelmCommand(p.templateCommand())
+	stdout, err = p.runHelmCommand(p.templateArgs())
 	if err != nil {
 		return nil, err
 	}
 
-	factory := NewResMapFactory()
-	rm, err = factory.NewResMapFromBytes(stdout)
-	if err == nil {
-		return rm, nil
+	r := &kio.ByteReader{Reader: bytes.NewBufferString(string(stdout)), OmitReaderAnnotations: true}
+	nodes, err := r.Read()
+	if err != nil {
+		return nil, err
 	}
-	// try to remove the contents before first "---" because
-	// helm may produce messages to stdout before it
-	stdoutStr := string(stdout)
-	if idx := strings.Index(stdoutStr, "---"); idx != -1 {
-		return factory.NewResMapFromBytes([]byte(stdoutStr[idx:]))
+
+	for i := range nodes {
+		o, err := fn.ParseKubeObject([]byte(nodes[i].MustString()))
+		if err != nil {
+			if strings.Contains(err.Error(), "expected exactly one object, got 0") {
+				// sometimes helm produces some messages in between resources, we can safely
+				// ignore these
+				continue
+			}
+			return nil, fmt.Errorf("failed to parse %s: %s", nodes[i].MustString(), err.Error())
+		}
+		objects = append(objects, o)
 	}
-	return nil, err
+
+	return objects, nil
 }
 
-func (p *HelmChartInflationGeneratorPlugin) templateCommand() []string {
+func (p *HelmChartInflationGeneratorPlugin) processValuesFiles() error {
+	var valuesFiles []string
+	for _, valuesFile := range p.ValuesFiles {
+		file, err := p.createNewMergedValuesFiles(valuesFile)
+		if err != nil {
+			return err
+		}
+		valuesFiles = append(valuesFiles, file)
+	}
+	p.ValuesFiles = valuesFiles
+	return nil
+}
+
+func (p *HelmChartInflationGeneratorPlugin) pullNonOCIRepo() ([]string, error) {
+	repoAddArgs, hash := p.repoAddArgs()
+	if repoAddArgs != nil {
+		if _, err := p.runHelmCommand(repoAddArgs); err != nil {
+			return nil, err
+		}
+	}
+	args := []string{
+		"pull",
+		"--untar",
+		"--untardir", p.absChartHome()}
+	if p.Name != "" {
+		args = append(args, hash+"/"+p.Name)
+	}
+	if p.Version != "" {
+		args = append(args, "--version", p.Version)
+	}
+	return args, nil
+}
+
+func (p *HelmChartInflationGeneratorPlugin) templateArgs() []string {
 	args := []string{"template"}
 	if p.ReleaseName != "" {
 		args = append(args, p.ReleaseName)
@@ -291,21 +385,65 @@ func (p *HelmChartInflationGeneratorPlugin) templateCommand() []string {
 	return args
 }
 
-func (p *HelmChartInflationGeneratorPlugin) pullCommand() []string {
+func (p *HelmChartInflationGeneratorPlugin) repoAddArgs() ([]string, string) {
+	if p.Repo != "" {
+		hash := md5.Sum([]byte(p.Repo))
+		strHash := hex.EncodeToString(hash[:])
+		args := []string{
+			"repo",
+			"add",
+			strHash,
+			p.Repo,
+		}
+		if p.password != "" && p.username != "" {
+			args = append(args, []string{
+				"--password", p.password,
+				"--username", p.username,
+			}...)
+		}
+		return args, strHash
+	}
+	return nil, ""
+}
+
+func (p *HelmChartInflationGeneratorPlugin) registryLoginArgs() []string {
+	if p.Repo != "" {
+		args := []string{
+			"registry",
+			"login",
+			p.Registry,
+		}
+		if p.password != "" && p.username != "" {
+			args = append(args, []string{
+				"--password", p.password,
+				"--username", p.username,
+			}...)
+		}
+		return args
+	}
+	return nil
+}
+
+func (p *HelmChartInflationGeneratorPlugin) pullOCIRepo() ([]string, error) {
+	if p.password != "" { // credentials provided, so we attempt to login
+		repoLoginArgs := p.registryLoginArgs()
+		if repoLoginArgs != nil {
+			if _, err := p.runHelmCommand(repoLoginArgs); err != nil {
+				return nil, err
+			}
+		}
+	}
 	args := []string{
 		"pull",
 		"--untar",
-		"--untardir", p.absChartHome()}
-	if p.Repo != "" {
-		args = append(args, "--repo", p.Repo)
-	}
-	if p.Name != "" {
-		args = append(args, p.Name)
+		"--untardir", p.absChartHome(),
+		// OCI pull combine the repo and the chart name into one URL
+		p.Repo + "/" + p.Name,
 	}
 	if p.Version != "" {
 		args = append(args, "--version", p.Version)
 	}
-	return args
+	return args, nil
 }
 
 // chartExistsLocally will return true if the chart does exist in
@@ -343,8 +481,6 @@ func (p *HelmChartInflationGeneratorPlugin) checkHelmVersion() error {
 	return nil
 }
 
-func NewResMapFactory() *resmap.Factory {
-	resourceFactory := resource.NewFactory(&hasher.Hasher{})
-	resourceFactory.IncludeLocalConfigs = true
-	return resmap.NewFactory(resourceFactory)
+func isOciRepo(repo string) bool {
+	return strings.HasPrefix(repo, "oci://")
 }

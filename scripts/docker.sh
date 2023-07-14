@@ -16,7 +16,6 @@
 
 repo_base=$(cd "$(dirname "$(dirname "$0")")" || exit ; pwd)
 
-UNSTABLE_TAG=unstable
 DEFAULT_GCR=${DEFAULT_GCR:-gcr.io/kpt-fn-contrib}
 GCR_REGISTRY=${GCR_REGISTRY:-${DEFAULT_GCR}}
 
@@ -26,9 +25,11 @@ function err {
 }
 
 function docker_build {
-  type=$1 # function type, e.g. contrib, curated
-  lang=$2 # function language, e.g. go, ts
-  name=$3 # function name, e.g. apply-setters
+  action=$1 # docker buildx operation, it should be either load or push.
+  type=$2 # function type, e.g. contrib, curated
+  lang=$3 # function language, e.g. go, ts
+  name=$4 # function name, e.g. apply-setters
+  tag=$5 # function tag, e.g. v1.2.3
 
   build_args=()
 
@@ -51,26 +52,35 @@ function docker_build {
   [[ -f "${override_dockerfile}" ]] && dockerfile="${override_dockerfile}"
   [[ -f "${dockerfile}" ]] || err "Dockerfile does not exist: ${dockerfile}"
 
-  # Use + conditional parameter expansion to protect from unbound array variable
-  docker build \
-    -t "${GCR_REGISTRY}/${name}:${UNSTABLE_TAG}" \
-    -f "${dockerfile}" \
-    "${build_args[@]+"${build_args[@]}"}" \
-    "${function_dir}"
-}
+  defaults="${repo_base}/build/docker/${lang}/defaults.env"
+  [[ -f "${defaults}" ]] || err "defaults file does not exist: ${defaults}"
+  # shellcheck source=/dev/null
+  source "${defaults}"
+  build_args+=(--build-arg "BUILDER_IMAGE=${BUILDER_IMAGE}")
+  build_args+=(--build-arg "BASE_IMAGE=${BASE_IMAGE}")
 
-function docker_push {
-  name=$1 # function name, e.g. apply-setters
-  version=$2 # function version, e.g. v0.1.1
+  echo "building ${GCR_REGISTRY}/${name}:${tag}"
 
-  docker push "${GCR_REGISTRY}/${name}:${version}"
-}
-
-
-function docker_tag {
-  name=$1 # function name, e.g. apply-setters
-  version=$2 # function version, e.g. v0.1.1
-
-  echo tagging "${GCR_REGISTRY}/${name}:${version}"
-  docker tag "${GCR_REGISTRY}/${name}:${UNSTABLE_TAG}" "${GCR_REGISTRY}/${name}:${version}"
+  case "${action}" in
+    load)
+      # Use + conditional parameter expansion to protect from unbound array variable
+      docker buildx build --load \
+        -t "${GCR_REGISTRY}/${name}:${tag}" \
+        -f "${dockerfile}" \
+        "${build_args[@]+"${build_args[@]}"}" \
+        "${function_dir}"    
+      ;;
+    push)
+      # build and push multi-arch image.
+      docker buildx build --push \
+        -t "${GCR_REGISTRY}/${name}:${tag}" \
+        -f "${dockerfile}" \
+        --platform "linux/amd64,linux/arm64" \
+        "${build_args[@]+"${build_args[@]}"}" \
+        "${function_dir}"    
+      ;;
+    *)
+      echo "action must be load or push"
+      exit 1
+  esac
 }

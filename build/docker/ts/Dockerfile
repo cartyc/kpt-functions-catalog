@@ -1,4 +1,8 @@
-FROM node:lts-alpine as builder
+ARG BUILDER_IMAGE
+ARG BASE_IMAGE
+
+
+FROM --platform=$BUILDPLATFORM $BUILDER_IMAGE as builder
 
 RUN mkdir -p /home/node/app && \
     chown -R node:node /home/node/app
@@ -20,7 +24,7 @@ RUN npm run build && \
 
 #############################################
 
-FROM node:lts-alpine
+FROM $BASE_IMAGE
 
 ARG FILENAME
 ENV FILENAME=${FILENAME}

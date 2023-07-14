@@ -1,4 +1,4 @@
-# export-terraform-resources
+# export-terraform
 
 ## Overview
 
@@ -16,9 +16,24 @@ The goal is to make the generated output as close to possible as what a human wo
 The following KCC resources are supported:
 - Folder
 - Project
+- ComputeSharedVPCHostProject
 - IAMPartialPolicy
 - IAMPolicy
 - IAMPolicyMember
+- LoggingLogSink
+- BigQueryDataset
+- PubSubTopic
+- StorageBucket
+- IAMAuditConfig
+- ComputeNetwork
+- ComputeSubnetwork
+- ComputeFirewall
+- ComputeRoute
+- ComputeRouter
+- ComputeRouterNAT
+- ComputeAddress
+- ServiceNetworkingConnection
+- LoggingLogBucket
 
 The output Terraform will be saved to a `ConfigMap` in `terraform.yaml` at the root of the package.
 Each key in the `ConfigMap` corresponds to a different file which is part of the Terraform module.

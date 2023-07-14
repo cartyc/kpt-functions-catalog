@@ -27,8 +27,9 @@
 
 import json
 import os
-import yaml
 import subprocess
+
+import yaml
 
 metadata_filename = 'metadata.yaml'
 directories_to_skip = ['_template', 'dist', 'node_modules']
@@ -36,7 +37,7 @@ examples_directory = 'examples'
 functions_directory = 'functions'
 lang_dirs = ['go', 'ts']
 examples_directories_to_skip = ['_template']
-fn_directories_to_skip = ['inflate-helm-chart']
+fn_directories_to_skip = ['bind', 'inflate-helm-chart', 'set-gcp-resource-ids', 'set-name-prefix']
 required_fields = ['image', 'description', 'tags', 'sourceURL', 'examplePackageURLs', 'emails', 'license']
 kpt_team_email = 'kpt-team@google.com'
 disallowed_kpt_commands = ['kpt fn run', 'kpt cfg', 'kpt pkg cat']
@@ -62,6 +63,8 @@ def validate_examples_dir_for_master_branch(fn_name_to_examples, contrib):
             examples_seen.add(example_name)
             if not example_name.startswith(fn_name):
                 raise Exception(f'example name {example_name} must start with the function name {fn_name}')
+            if example_name in examples_directories_to_skip:
+                continue
             validate_example_md(fn_name, curr_examples_dir, example_name, 'master')
             if not eval_or_exec_script(os.path.join(curr_examples_dir, example_name)):
                 validate_example_kptfile(fn_name, curr_examples_dir, example_name, 'master', contrib)

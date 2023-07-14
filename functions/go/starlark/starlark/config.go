@@ -21,7 +21,7 @@ const (
 
 	sourceKey = "source"
 
-	defaultProgramName = "stalark-function-run"
+	defaultProgramName = "starlark-function-run"
 )
 
 type StarlarkRun struct {
@@ -34,6 +34,8 @@ type StarlarkRun struct {
 
 func (sr *StarlarkRun) Config(fnCfg *fn.KubeObject) error {
 	switch {
+	case fnCfg.IsEmpty():
+		return fmt.Errorf("FunctionConfig is missing. Expect `ConfigMap` or `StarlarkRun`")
 	case fnCfg.IsGVK(configMapApiVersion, configMapKind):
 		cm := &corev1.ConfigMap{}
 		if err := fnCfg.As(cm); err != nil {

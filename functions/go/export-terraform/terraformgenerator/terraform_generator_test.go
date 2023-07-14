@@ -16,10 +16,10 @@ package terraformgenerator
 
 import (
 	"fmt"
-	"io/ioutil"
 	"os"
 	"path"
 	"path/filepath"
+	"strings"
 	"testing"
 
 	sdk "github.com/GoogleContainerTools/kpt-functions-catalog/thirdparty/kyaml/fnsdk"
@@ -27,7 +27,10 @@ import (
 	"github.com/stretchr/testify/require"
 )
 
-const testDir = "testdata"
+const (
+	testDir                = "testdata"
+	updateExpectedTfEnvVar = "UPDATE_EXPECTED_TF"
+)
 
 type TerraformTest struct {
 	Name string
@@ -55,6 +58,18 @@ var testCases = []TerraformTest{
 		Name: "projects",
 		Mode: "terraform",
 	},
+	{
+		Name: "log",
+		Mode: "terraform",
+	},
+	{
+		Name: "network",
+		Mode: "terraform",
+	},
+	{
+		Name: "multi-network",
+		Mode: "terraform",
+	},
 }
 
 func TestTerraformGeneration(t *testing.T) {
@@ -79,7 +94,7 @@ func TestTerraformGeneration(t *testing.T) {
 				require.NoError(err)
 
 				// round-trip to disk to make sure all annotations are consistent
-				tmpDir, err := ioutil.TempDir("", "export-terraform-test-*")
+				tmpDir, err := os.MkdirTemp("", "export-terraform-test-*")
 				defer os.RemoveAll(tmpDir)
 				require.NoError(err)
 				err = testutil.ResourceListToDirectory(tempRL, tmpDir)
@@ -104,6 +119,14 @@ func TestTerraformGeneration(t *testing.T) {
 			require.NoError(err)
 			actualTerraform, err := findTerraform(actualRL)
 			require.NoError(err)
+
+			// update expected TF if env var set
+			if strings.ToLower(os.Getenv(updateExpectedTfEnvVar)) == "true" {
+				t.Logf("Updating expected TF data for %s", tt.Name)
+				err = writeTerraformToDir(path.Join("..", testDir, tt.Name, "tf"), actualTerraform)
+				require.NoError(err)
+			}
+
 			require.Lenf(actualTerraform, len(expectedTerraform), "Generated Terraform doesn't have required keys")
 			for key, expectedString := range expectedTerraform {
 				actualString := actualTerraform[key]
@@ -118,7 +141,7 @@ func TestTerraformGeneration(t *testing.T) {
 			// diff command) to do it. This will be addressed in the next iteration.
 			// The workaround is that we read the resource files as a ResourceList and
 			// then compare this ResourceList with the expected ResourceList.
-			tmpDir, err := ioutil.TempDir("", "export-terraform-test-*")
+			tmpDir, err := os.MkdirTemp("", "export-terraform-test-*")
 			defer os.RemoveAll(tmpDir)
 			require.NoError(err)
 			err = testutil.ResourceListToDirectory(actualRL, tmpDir)
@@ -158,6 +181,16 @@ func getTerraformFromDir(sourceDir string) (map[string]string, error) {
 	}
 
 	return data, nil
+}
+
+func writeTerraformToDir(sourceDir string, tfData map[string]string) error {
+	for fileName, data := range tfData {
+		err := os.WriteFile(path.Join(sourceDir, fileName), []byte(data), 0644)
+		if err != nil {
+			return err
+		}
+	}
+	return nil
 }
 
 func findTerraform(rl *sdk.ResourceList) (map[string]string, error) {

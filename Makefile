@@ -12,7 +12,7 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 SHELL=/bin/bash
-TAG := dev
+TAG := unstable
 
 .DEFAULT_GOAL := help
 .PHONY: help
@@ -41,6 +41,12 @@ check-licenses:
 	cd functions/go && $(MAKE) check-licenses
 	cd contrib/functions/go && $(MAKE) check-licenses
 	cd contrib/functions/ts && $(MAKE) check-licenses
+
+add-licenses:
+	cd functions/go && $(MAKE) add-licenses
+	cd functions/ts && $(MAKE) add-licenses
+	cd contrib/functions/go && $(MAKE) add-licenses
+	cd contrib/functions/ts && $(MAKE) add-licenses
 
 verify-docs:
 	go install github.com/monopole/mdrip@v1.0.2

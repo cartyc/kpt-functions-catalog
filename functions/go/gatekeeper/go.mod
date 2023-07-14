@@ -1,6 +1,6 @@
 module github.com/GoogleContainerTools/kpt-functions-catalog/functions/go/gatekeeper
 
-go 1.17
+go 1.19
 
 require (
 	github.com/open-policy-agent/frameworks/constraint v0.0.0-20220121182312-5d06dedcafb4
@@ -49,7 +49,7 @@ require (
 	github.com/open-policy-agent/opa v0.35.0 // indirect
 	github.com/pkg/errors v0.9.1 // indirect
 	github.com/pmezard/go-difflib v1.0.0 // indirect
-	github.com/prometheus/client_golang v1.11.0 // indirect
+	github.com/prometheus/client_golang v1.11.1 // indirect
 	github.com/prometheus/client_model v0.2.0 // indirect
 	github.com/prometheus/common v0.32.1 // indirect
 	github.com/prometheus/procfs v0.7.3 // indirect
